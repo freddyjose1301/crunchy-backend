@@ -44,16 +44,11 @@ app.get('/api/auth/login-options', async (req, res) => {
       return res.status(404).json({ error: 'No hay huellas registradas. Ingresa con contraseña primero y vincula tu huella.' });
     }
 
-    const authenticators = result.rows.map(row => ({
-      credentialID: Buffer.from(row.id, 'base64'),
-      credentialPublicKey: Buffer.from(row.public_key, 'base64'),
-      counter: parseInt(row.counter),
-    }));
-
     const options = await generateAuthenticationOptions({
       rpID,
-      allowCredentials: authenticators.map(auth => ({
-        id: auth.credentialID,
+      allowCredentials: result.rows.map(row => ({
+        // CONVERSIÓN OBLIGATORIA A Uint8Array PARA LA VERSIÓN 10
+        id: new Uint8Array(Buffer.from(row.id, 'base64')), 
         type: 'public-key',
         transports: ['internal'],
       })),
@@ -63,10 +58,21 @@ app.get('/api/auth/login-options', async (req, res) => {
     currentLoginChallenge = options.challenge;
     res.json(options);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error generando opciones de login' });
+    console.error("Error en login-options:", error);
+    res.status(500).json({ error: 'Error del servidor: ' + error.message });
   }
 });
+
+// NUEVO: 6. Borrar la huella de la Base de Datos
+app.delete('/api/auth/reset-biometric', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
+    res.json({ success: true, message: 'Huella borrada correctamente' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // 5. Verificar INICIO DE SESIÓN
 app.post('/api/auth/login-verify', async (req, res) => {
