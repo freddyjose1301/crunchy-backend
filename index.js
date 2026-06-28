@@ -212,32 +212,32 @@ app.get('/', (req, res) => {
 // ==========================================
 
 // 1. Generar opciones para que el teléfono encienda el lector de huellas
+// 1. Generar opciones para que el teléfono encienda el lector de huellas
 app.get('/api/auth/register-options', async (req, res) => {
   try {
     const userOptions = await generateRegistrationOptions({
       rpName,
       rpID,
-      userID: 'user_crunchy_master', // ID único para tu usuario administrador
+      // EL CAMBIO VITAL ESTÁ EN ESTA LÍNEA (Uint8Array)
+      userID: new Uint8Array(Buffer.from('user_crunchy_master')), 
       userName: 'freddyjose13',
       userDisplayName: 'Freddy Villegas',
       attestationType: 'none',
       authenticatorSelection: {
         residentKey: 'required',
         userVerification: 'preferred',
-        authenticatorAttachment: 'platform', // Obliga a usar biometría integrada (huella/rostro)
+        authenticatorAttachment: 'platform', 
       },
     });
 
-    // Guardamos el desafío temporalmente para verificarlo en el siguiente paso
     currentChallenge = userOptions.challenge;
-
     res.json(userOptions);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Error generando opciones de registro' });
+    // Ahora enviamos el mensaje de error para saber qué pasa
+    res.status(500).json({ error: 'Error del servidor: ' + error.message }); 
   }
 });
-
 // 2. Recibir la clave pública del teléfono y guardarla en PostgreSQL
 app.post('/api/auth/register-verify', async (req, res) => {
   const { body } = req;
