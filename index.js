@@ -46,12 +46,15 @@ app.get('/api/auth/login-options', async (req, res) => {
 
     const options = await generateAuthenticationOptions({
       rpID,
-      allowCredentials: result.rows.map(row => ({
-        // CONVERSIÓN OBLIGATORIA A Uint8Array PARA LA VERSIÓN 10
-        id: new Uint8Array(Buffer.from(row.id, 'base64')), 
-        type: 'public-key',
-        transports: ['internal'],
-      })),
+      allowCredentials: result.rows.map(row => {
+        // En v10, el ID debe ser un texto (String). Lo decodificamos de la base de datos.
+        const originalIdString = Buffer.from(row.id, 'base64').toString('utf8');
+        return {
+          id: originalIdString, // Pasamos el texto limpio
+          type: 'public-key',
+          transports: ['internal'],
+        };
+      }),
       userVerification: 'preferred',
     });
 
@@ -63,26 +66,23 @@ app.get('/api/auth/login-options', async (req, res) => {
   }
 });
 
-// NUEVO: 6. Borrar la huella de la Base de Datos
-app.delete('/api/auth/reset-biometric', async (req, res) => {
-  try {
-    await pool.query('DELETE FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
-    res.json({ success: true, message: 'Huella borrada correctamente' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
 // 5. Verificar INICIO DE SESIÓN
 app.post('/api/auth/login-verify', async (req, res) => {
   const { body } = req;
   try {
-    const result = await pool.query('SELECT * FROM authenticators WHERE id = $1', [body.id]);
-    if (result.rows.length === 0) {
+    // Buscamos todas las credenciales y filtramos la que coincida con la que manda tu celular
+    const result = await pool.query('SELECT * FROM authenticators');
+    const authenticator = result.rows.find(row => {
+      const decodedId = Buffer.from(row.id, 'base64').toString('utf8');
+      return decodedId === body.id;
+    });
+
+    if (!authenticator) {
       return res.status(400).json({ verified: false, error: 'Credencial no encontrada en DB' });
     }
-    const authenticator = result.rows[0];
+
+    // La llave pública SÍ debe ser un arreglo matemático (Uint8Array)
+    const publicKeyArray = new Uint8Array(Buffer.from(authenticator.public_key, 'base64'));
 
     const verification = await verifyAuthenticationResponse({
       response: body,
@@ -90,8 +90,8 @@ app.post('/api/auth/login-verify', async (req, res) => {
       expectedOrigin: origin,
       expectedRPID: rpID,
       authenticator: {
-        credentialID: Buffer.from(authenticator.id, 'base64'),
-        credentialPublicKey: Buffer.from(authenticator.public_key, 'base64'),
+        credentialID: body.id, // Pasamos el texto directo
+        credentialPublicKey: publicKeyArray,
         counter: parseInt(authenticator.counter),
       },
     });
@@ -99,7 +99,7 @@ app.post('/api/auth/login-verify', async (req, res) => {
     const { verified, authenticationInfo } = verification;
 
     if (verified) {
-      // Actualizamos el contador de seguridad
+      // Si la huella coincide, actualizamos el contador de seguridad
       await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [authenticationInfo.newCounter, authenticator.id]);
       res.json({ verified: true });
     } else {
