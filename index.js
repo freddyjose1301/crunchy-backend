@@ -123,10 +123,11 @@ app.post('/api/auth/login-verify', async (req, res) => {
       expectedChallenge: currentLoginChallenge, 
       expectedOrigin: origin, 
       expectedRPID: rpID,
-      authenticator: {
-        credentialID: authenticator.id,
-        credentialPublicKey: publicKeyArray,
-        counter: parseInt(authenticator.counter),
+      // EL CAMBIO DE ORO DE LA VERSIÓN 10: Ahora se llama 'credential' 
+      credential: {
+        id: authenticator.id,               // Antes era credentialID
+        publicKey: publicKeyArray,          // Antes era credentialPublicKey
+        counter: parseInt(authenticator.counter, 10),
       },
     });
 
@@ -137,7 +138,6 @@ app.post('/api/auth/login-verify', async (req, res) => {
       res.status(400).json({ verified: false, error: 'Firma criptográfica inválida' });
     }
   } catch (error) {
-    // ENVIAMOS EL ERROR TEXTUAL DIRECTO AL TELÉFONO
     res.status(400).json({ verified: false, error: error.message });
   }
 });
