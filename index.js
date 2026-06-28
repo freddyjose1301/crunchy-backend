@@ -8,8 +8,10 @@ const {
 
 // Configuración básica para WebAuthn
 const rpName = 'Crunchy Club ERP';
-const rpID = 'localhost'; // En producción aquí irá tu dominio de Render
-const origin = `http://${rpID}:5173`; // El origen de tu frontend local
+// El rpID debe ser exactamente tu dominio web sin el https://
+const rpID = 'crunchy-club-new.onrender.com'; 
+// El origin debe ser la URL completa exacta
+const origin = 'https://crunchy-club-new.onrender.com';
 
 // Variable temporal en memoria para guardar el desafío durante el proceso de registro
 // (En una app real con múltiples usuarios esto iría en la sesión)
