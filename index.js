@@ -239,8 +239,12 @@ app.get('/api/auth/register-options', async (req, res) => {
   }
 });
 // 2. Recibir la clave pública del teléfono y guardarla en PostgreSQL
+// 2. Recibir la clave pública del teléfono y guardarla en PostgreSQL
 app.post('/api/auth/register-verify', async (req, res) => {
   const { body } = req;
+
+  console.log("➡️ Iniciando verificación criptográfica de la huella...");
+  console.log("Desafío en memoria del servidor:", currentChallenge);
 
   try {
     const verification = await verifyRegistrationResponse({
@@ -255,23 +259,28 @@ app.post('/api/auth/register-verify', async (req, res) => {
     if (verified && registrationInfo) {
       const { credentialID, credentialPublicKey, counter } = registrationInfo;
 
-      // Convertir la clave pública y el ID a texto/base64 para guardarlos en Postgres
       const credentialIdBase64 = Buffer.from(credentialID).toString('base64');
       const publicKeyBase64 = Buffer.from(credentialPublicKey).toString('base64');
 
-      // Guardar en la base de datos
       await pool.query(
         'INSERT INTO authenticators (id, user_id, public_key, counter, device_type) VALUES ($1, $2, $3, $4, $5)',
         [credentialIdBase64, 'user_crunchy_master', publicKeyBase64, counter, 'internal_biometric']
       );
 
+      console.log("✅ Dispositivo verificado e insertado en PostgreSQL.");
       res.json({ verified: true, message: '¡Huella dactilar vinculada con éxito!' });
     } else {
-      res.status(400).json({ verified: false, error: 'No se pudo verificar la credencial' });
+      // Si la librería dice 'verified: false', imprimimos el objeto completo para ver qué falló
+      console.error("❌ La librería rechazó la firma. Detalles:", verification);
+      res.status(400).json({ 
+        verified: false, 
+        error: 'Falla de coincidencia criptográfica (Origen o Desafío inválido).' 
+      });
     }
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error en la verificación criptográfica' });
+    // Si la validación revienta por un error de estructura
+    console.error("❌ Error crítico en el proceso de verificación:", error.message);
+    res.status(500).json({ error: 'Error interno del validador: ' + error.message });
   }
 });
 
