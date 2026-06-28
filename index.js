@@ -215,15 +215,15 @@ app.post('/api/produccion', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 1. Descontar las bolsas utilizadas
+// 1. Descontar las bolsas utilizadas y su valor financiero proporcional
     await client.query(
-      'UPDATE inventory_items SET quantity = quantity - $1 WHERE id = $2 AND quantity >= $1',
+      'UPDATE inventory_items SET total_cost_bs = total_cost_bs - (total_cost_bs / quantity) * $1, quantity = quantity - $1 WHERE id = $2 AND quantity >= $1',
       [bagsAchieved, bagId]
     );
 
-    // 2. Descontar los stickers (buscando por su categoría)
+    // 2. Descontar los stickers y su valor financiero proporcional
     await client.query(
-      "UPDATE inventory_items SET quantity = quantity - $1 WHERE category = 'stickers' AND quantity >= $1",
+      "UPDATE inventory_items SET total_cost_bs = total_cost_bs - (total_cost_bs / quantity) * $1, quantity = quantity - $1 WHERE category = 'stickers' AND quantity >= $1",
       [stickersQty]
     );
 
