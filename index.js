@@ -35,78 +35,114 @@ app.use(express.json());
 // Variable temporal en memoria para el desafío de login
 let currentLoginChallenge = '';
 
-// 4. Generar opciones para INICIO DE SESIÓN
-app.get('/api/auth/login-options', async (req, res) => {
+// ==========================================
+// MÓDULO BIOMÉTRICO (WEBAUTHN V10 - LIMPIO)
+// ==========================================
+
+app.get('/api/auth/register-options', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'No hay huellas registradas. Ingresa con contraseña primero y vincula tu huella.' });
-    }
-
-    const options = await generateAuthenticationOptions({
-      rpID,
-      allowCredentials: result.rows.map(row => {
-        // En v10, el ID debe ser un texto (String). Lo decodificamos de la base de datos.
-        const originalIdString = Buffer.from(row.id, 'base64').toString('utf8');
-        return {
-          id: originalIdString, // Pasamos el texto limpio
-          type: 'public-key',
-          transports: ['internal'],
-        };
-      }),
-      userVerification: 'preferred',
+    const userOptions = await generateRegistrationOptions({
+      rpName, rpID,
+      userID: new Uint8Array(Buffer.from('user_crunchy_master')), 
+      userName: 'freddyjose13',
+      userDisplayName: 'Freddy Villegas',
+      attestationType: 'none',
+      authenticatorSelection: { residentKey: 'required', userVerification: 'preferred', authenticatorAttachment: 'platform' },
     });
-
-    currentLoginChallenge = options.challenge;
-    res.json(options);
+    currentChallenge = userOptions.challenge;
+    res.json(userOptions);
   } catch (error) {
-    console.error("Error en login-options:", error);
-    res.status(500).json({ error: 'Error del servidor: ' + error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// 5. Verificar INICIO DE SESIÓN
-app.post('/api/auth/login-verify', async (req, res) => {
-  const { body } = req;
+app.post('/api/auth/register-verify', async (req, res) => {
   try {
-    // Buscamos todas las credenciales y filtramos la que coincida con la que manda tu celular
-    const result = await pool.query('SELECT * FROM authenticators');
-    const authenticator = result.rows.find(row => {
-      const decodedId = Buffer.from(row.id, 'base64').toString('utf8');
-      return decodedId === body.id;
+    const verification = await verifyRegistrationResponse({
+      response: req.body, expectedChallenge: currentChallenge, expectedOrigin: origin, expectedRPID: rpID,
     });
-
-    if (!authenticator) {
-      return res.status(400).json({ verified: false, error: 'Credencial no encontrada en DB' });
+    if (verification.verified && verification.registrationInfo) {
+      const credential = verification.registrationInfo.credential || verification.registrationInfo;
+      // Guardamos el ID como texto puro y la llave como Base64
+      const idString = credential.id; 
+      const publicKeyBase64 = Buffer.from(credential.publicKey).toString('base64');
+      
+      await pool.query(
+        'INSERT INTO authenticators (id, user_id, public_key, counter, device_type) VALUES ($1, $2, $3, $4, $5)',
+        [idString, 'user_crunchy_master', publicKeyBase64, credential.counter, 'internal_biometric']
+      );
+      res.json({ verified: true });
+    } else {
+      res.status(400).json({ verified: false, error: 'Firma rechazada' });
     }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    // La llave pública SÍ debe ser un arreglo matemático (Uint8Array)
+app.get('/api/auth/check-biometric', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*) FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
+    res.json({ linked: parseInt(result.rows[0].count) > 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/auth/login-options', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'No hay huellas registradas.' });
+
+    const options = await generateAuthenticationOptions({
+      rpID,
+      allowCredentials: result.rows.map(row => ({
+        id: row.id, // Leemos el texto puro de PostgreSQL
+        type: 'public-key',
+        transports: ['internal'],
+      })),
+      userVerification: 'preferred',
+    });
+    currentLoginChallenge = options.challenge;
+    res.json(options);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/login-verify', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM authenticators WHERE id = $1', [req.body.id]);
+    if (result.rows.length === 0) return res.status(400).json({ verified: false, error: 'Credencial no existe en BD' });
+    
+    const authenticator = result.rows[0];
     const publicKeyArray = new Uint8Array(Buffer.from(authenticator.public_key, 'base64'));
 
     const verification = await verifyAuthenticationResponse({
-      response: body,
-      expectedChallenge: currentLoginChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
+      response: req.body, expectedChallenge: currentLoginChallenge, expectedOrigin: origin, expectedRPID: rpID,
       authenticator: {
-        credentialID: body.id, // Pasamos el texto directo
+        credentialID: authenticator.id,
         credentialPublicKey: publicKeyArray,
         counter: parseInt(authenticator.counter),
       },
     });
 
-    const { verified, authenticationInfo } = verification;
-
-    if (verified) {
-      // Si la huella coincide, actualizamos el contador de seguridad
-      await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [authenticationInfo.newCounter, authenticator.id]);
+    if (verification.verified) {
+      await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [verification.authenticationInfo.newCounter, authenticator.id]);
       res.json({ verified: true });
     } else {
-      res.status(400).json({ verified: false, error: 'Firma de login inválida' });
+      res.status(400).json({ verified: false, error: 'Firma inválida' });
     }
   } catch (error) {
-    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/auth/reset-biometric', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
+    res.json({ success: true });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
@@ -291,106 +327,6 @@ app.get('/api/productos', async (req, res) => {
 
 app.get('/', (req, res) => {
   res.send('Servidor del ERP de Crunchy Club corriendo perfectamente.');
-});
-
-// ==========================================
-// MÓDULO BIOMÉTRICO (WEBAUTHN - REGISTRO)
-// ==========================================
-
-// 1. Generar opciones para que el teléfono encienda el lector de huellas
-// 1. Generar opciones para que el teléfono encienda el lector de huellas
-app.get('/api/auth/register-options', async (req, res) => {
-  try {
-    const userOptions = await generateRegistrationOptions({
-      rpName,
-      rpID,
-      // EL CAMBIO VITAL ESTÁ EN ESTA LÍNEA (Uint8Array)
-      userID: new Uint8Array(Buffer.from('user_crunchy_master')), 
-      userName: 'freddyjose13',
-      userDisplayName: 'Freddy Villegas',
-      attestationType: 'none',
-      authenticatorSelection: {
-        residentKey: 'required',
-        userVerification: 'preferred',
-        authenticatorAttachment: 'platform', 
-      },
-    });
-
-    currentChallenge = userOptions.challenge;
-    res.json(userOptions);
-  } catch (error) {
-    console.error(error);
-    // Ahora enviamos el mensaje de error para saber qué pasa
-    res.status(500).json({ error: 'Error del servidor: ' + error.message }); 
-  }
-});
-// 2. Recibir la clave pública del teléfono y guardarla en PostgreSQL
-// 2. Recibir la clave pública del teléfono y guardarla en PostgreSQL
-app.post('/api/auth/register-verify', async (req, res) => {
-  const { body } = req;
-
-  console.log("➡️ Iniciando verificación criptográfica de la huella...");
-  console.log("Desafío en memoria del servidor:", currentChallenge);
-
-  try {
-    const verification = await verifyRegistrationResponse({
-      response: body,
-      expectedChallenge: currentChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
-    });
-
-    const { verified, registrationInfo } = verification;
-
-if (verified && registrationInfo) {
-      // Ajuste clave para soportar la nueva versión 10 de @simplewebauthn
-      const credentialInfo = registrationInfo.credential || registrationInfo;
-      
-      const id = credentialInfo.id || credentialInfo.credentialID;
-      const publicKey = credentialInfo.publicKey || credentialInfo.credentialPublicKey;
-      const counter = credentialInfo.counter;
-
-      // Convertir la clave pública y el ID a base64 para PostgreSQL
-      const credentialIdBase64 = Buffer.from(id).toString('base64');
-      const publicKeyBase64 = Buffer.from(publicKey).toString('base64');
-
-      await pool.query(
-        'INSERT INTO authenticators (id, user_id, public_key, counter, device_type) VALUES ($1, $2, $3, $4, $5)',
-        [credentialIdBase64, 'user_crunchy_master', publicKeyBase64, counter, 'internal_biometric']
-      );
-
-      console.log("✅ Dispositivo verificado e insertado en PostgreSQL.");
-      res.json({ verified: true, message: '¡Huella dactilar vinculada con éxito!' });
-    } else {
-      // Si la librería dice 'verified: false', imprimimos el objeto completo para ver qué falló
-      console.error("❌ La librería rechazó la firma. Detalles:", verification);
-      res.status(400).json({ 
-        verified: false, 
-        error: 'Falla de coincidencia criptográfica (Origen o Desafío inválido).' 
-      });
-    }
-  } catch (error) {
-    // Si la validación revienta por un error de estructura
-    console.error("❌ Error crítico en el proceso de verificación:", error.message);
-    res.status(500).json({ error: 'Error interno del validador: ' + error.message });
-  }
-});
-
-// En crunchy-backend/index.js
-
-// 3. Verificar si el usuario ya tiene una huella vinculada
-app.get('/api/auth/check-biometric', async (req, res) => {
-  try {
-    const result = await pool.query(
-      'SELECT COUNT(*) FROM authenticators WHERE user_id = $1', 
-      ['user_crunchy_master']
-    );
-    const hasFingerprint = parseInt(result.rows[0].count) > 0;
-    res.json({ linked: hasFingerprint });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).json({ error: 'Error al verificar estatus biométrico' });
-  }
 });
 
 app.listen(PORT, () => {
