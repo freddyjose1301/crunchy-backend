@@ -333,6 +333,30 @@ app.get('/', (req, res) => {
   res.send('Servidor del ERP de Crunchy Club corriendo perfectamente.');
 });
 
+// ==========================================
+// MÓDULO DE CAJA Y CAPITAL
+// ==========================================
+// Leer el capital actual
+app.get('/api/capital', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT capital FROM business_settings LIMIT 1');
+    res.json({ capital: result.rows[0] ? parseFloat(result.rows[0].capital) : 0 });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Actualizar el capital
+app.put('/api/capital', async (req, res) => {
+  const { newCapital } = req.body;
+  try {
+    await pool.query('UPDATE business_settings SET capital = $1', [newCapital]);
+    res.json({ success: true, capital: newCapital });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Servidor backend escuchando en el puerto ${PORT}`);
 });
