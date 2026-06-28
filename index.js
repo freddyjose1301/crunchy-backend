@@ -256,11 +256,17 @@ app.post('/api/auth/register-verify', async (req, res) => {
 
     const { verified, registrationInfo } = verification;
 
-    if (verified && registrationInfo) {
-      const { credentialID, credentialPublicKey, counter } = registrationInfo;
+if (verified && registrationInfo) {
+      // Ajuste clave para soportar la nueva versión 10 de @simplewebauthn
+      const credentialInfo = registrationInfo.credential || registrationInfo;
+      
+      const id = credentialInfo.id || credentialInfo.credentialID;
+      const publicKey = credentialInfo.publicKey || credentialInfo.credentialPublicKey;
+      const counter = credentialInfo.counter;
 
-      const credentialIdBase64 = Buffer.from(credentialID).toString('base64');
-      const publicKeyBase64 = Buffer.from(credentialPublicKey).toString('base64');
+      // Convertir la clave pública y el ID a base64 para PostgreSQL
+      const credentialIdBase64 = Buffer.from(id).toString('base64');
+      const publicKeyBase64 = Buffer.from(publicKey).toString('base64');
 
       await pool.query(
         'INSERT INTO authenticators (id, user_id, public_key, counter, device_type) VALUES ($1, $2, $3, $4, $5)',
