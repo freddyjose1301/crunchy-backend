@@ -119,7 +119,10 @@ app.post('/api/auth/login-verify', async (req, res) => {
     const publicKeyArray = new Uint8Array(Buffer.from(authenticator.public_key, 'base64'));
 
     const verification = await verifyAuthenticationResponse({
-      response: req.body, expectedChallenge: currentLoginChallenge, expectedOrigin: origin, expectedRPID: rpID,
+      response: req.body, 
+      expectedChallenge: currentLoginChallenge, 
+      expectedOrigin: origin, 
+      expectedRPID: rpID,
       authenticator: {
         credentialID: authenticator.id,
         credentialPublicKey: publicKeyArray,
@@ -131,10 +134,11 @@ app.post('/api/auth/login-verify', async (req, res) => {
       await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [verification.authenticationInfo.newCounter, authenticator.id]);
       res.json({ verified: true });
     } else {
-      res.status(400).json({ verified: false, error: 'Firma inválida' });
+      res.status(400).json({ verified: false, error: 'Firma criptográfica inválida' });
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    // ENVIAMOS EL ERROR TEXTUAL DIRECTO AL TELÉFONO
+    res.status(400).json({ verified: false, error: error.message });
   }
 });
 
