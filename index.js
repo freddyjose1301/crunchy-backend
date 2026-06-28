@@ -32,71 +32,76 @@ app.use(express.json());
 // ==========================================
 
 // 4. Generar el desafío criptográfico para el Login
+// Variable temporal en memoria para el desafío de login
+let currentLoginChallenge = '';
+
+// 4. Generar opciones para INICIO DE SESIÓN
 app.get('/api/auth/login-options', async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM authenticators WHERE user_id = 'user_crunchy_master' LIMIT 1");
-    if (result.rows.length === 0) return res.status(404).json({ error: 'No hay huellas registradas en la base de datos.' });
+    const result = await pool.query('SELECT * FROM authenticators WHERE user_id = $1', ['user_crunchy_master']);
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'No hay huellas registradas. Ingresa con contraseña primero y vincula tu huella.' });
+    }
 
-    // En la v10, el ID para verificar debe ser un string Base64URL limpio
-    const allowCredentials = result.rows.map(row => {
-      const idBase64URL = row.id.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-      return {
-        id: idBase64URL,
-        type: 'public-key',
-        transports: ['internal'],
-      };
-    });
+    const authenticators = result.rows.map(row => ({
+      credentialID: Buffer.from(row.id, 'base64'),
+      credentialPublicKey: Buffer.from(row.public_key, 'base64'),
+      counter: parseInt(row.counter),
+    }));
 
     const options = await generateAuthenticationOptions({
       rpID,
-      allowCredentials,
+      allowCredentials: authenticators.map(auth => ({
+        id: auth.credentialID,
+        type: 'public-key',
+        transports: ['internal'],
+      })),
       userVerification: 'preferred',
     });
 
-    currentChallenge = options.challenge;
+    currentLoginChallenge = options.challenge;
     res.json(options);
   } catch (error) {
     console.error(error);
-    // Ahora enviamos el error real al celular si algo explota
-    res.status(500).json({ error: 'Error del servidor (options): ' + error.message });
+    res.status(500).json({ error: 'Error generando opciones de login' });
   }
 });
 
-// 5. Recibir la firma de la huella y dejar entrar al usuario
+// 5. Verificar INICIO DE SESIÓN
 app.post('/api/auth/login-verify', async (req, res) => {
   const { body } = req;
   try {
-    const result = await pool.query("SELECT * FROM authenticators WHERE user_id = 'user_crunchy_master' LIMIT 1");
+    const result = await pool.query('SELECT * FROM authenticators WHERE id = $1', [body.id]);
+    if (result.rows.length === 0) {
+      return res.status(400).json({ verified: false, error: 'Credencial no encontrada en DB' });
+    }
     const authenticator = result.rows[0];
-
-    // Formateamos las llaves a como las exige la nueva versión
-    const idBase64URL = authenticator.id.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    const publicKeyUint8 = new Uint8Array(Buffer.from(authenticator.public_key, 'base64'));
 
     const verification = await verifyAuthenticationResponse({
       response: body,
-      expectedChallenge: currentChallenge,
+      expectedChallenge: currentLoginChallenge,
       expectedOrigin: origin,
       expectedRPID: rpID,
       authenticator: {
-        credentialID: idBase64URL, 
-        credentialPublicKey: publicKeyUint8, 
+        credentialID: Buffer.from(authenticator.id, 'base64'),
+        credentialPublicKey: Buffer.from(authenticator.public_key, 'base64'),
         counter: parseInt(authenticator.counter),
       },
     });
 
-    if (verification.verified) {
-      await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [
-        verification.authenticationInfo.newCounter,
-        authenticator.id
-      ]);
+    const { verified, authenticationInfo } = verification;
+
+    if (verified) {
+      // Actualizamos el contador de seguridad
+      await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [authenticationInfo.newCounter, authenticator.id]);
       res.json({ verified: true });
     } else {
-      res.status(400).json({ verified: false, error: 'Firma biométrica rechazada por el chip.' });
+      res.status(400).json({ verified: false, error: 'Firma de login inválida' });
     }
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Error interno de validación: ' + error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
