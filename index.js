@@ -34,16 +34,18 @@ app.use(express.json());
 // 4. Generar el desafío criptográfico para el Login
 app.get('/api/auth/login-options', async (req, res) => {
   try {
-    // Buscamos la huella del administrador en Supabase
     const result = await pool.query("SELECT * FROM authenticators WHERE user_id = 'user_crunchy_master' LIMIT 1");
-    if (result.rows.length === 0) return res.status(404).json({ error: 'No hay huellas registradas en el sistema.' });
+    if (result.rows.length === 0) return res.status(404).json({ error: 'No hay huellas registradas en la base de datos.' });
 
-    // Le decimos al celular cuál credencial estamos buscando
-    const allowCredentials = result.rows.map(row => ({
-      id: new Uint8Array(Buffer.from(row.id, 'base64')),
-      type: 'public-key',
-      transports: ['internal'],
-    }));
+    // En la v10, el ID para verificar debe ser un string Base64URL limpio
+    const allowCredentials = result.rows.map(row => {
+      const idBase64URL = row.id.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      return {
+        id: idBase64URL,
+        type: 'public-key',
+        transports: ['internal'],
+      };
+    });
 
     const options = await generateAuthenticationOptions({
       rpID,
@@ -55,7 +57,8 @@ app.get('/api/auth/login-options', async (req, res) => {
     res.json(options);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    // Ahora enviamos el error real al celular si algo explota
+    res.status(500).json({ error: 'Error del servidor (options): ' + error.message });
   }
 });
 
@@ -66,32 +69,34 @@ app.post('/api/auth/login-verify', async (req, res) => {
     const result = await pool.query("SELECT * FROM authenticators WHERE user_id = 'user_crunchy_master' LIMIT 1");
     const authenticator = result.rows[0];
 
-    // Comparamos matemáticamente la huella leída con la llave pública de Supabase
+    // Formateamos las llaves a como las exige la nueva versión
+    const idBase64URL = authenticator.id.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const publicKeyUint8 = new Uint8Array(Buffer.from(authenticator.public_key, 'base64'));
+
     const verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge: currentChallenge,
       expectedOrigin: origin,
       expectedRPID: rpID,
       authenticator: {
-        credentialID: new Uint8Array(Buffer.from(authenticator.id, 'base64')),
-        credentialPublicKey: new Uint8Array(Buffer.from(authenticator.public_key, 'base64')),
+        credentialID: idBase64URL, 
+        credentialPublicKey: publicKeyUint8, 
         counter: parseInt(authenticator.counter),
       },
     });
 
     if (verification.verified) {
-      // Actualizamos el contador de seguridad para evitar hackeos de repetición
       await pool.query('UPDATE authenticators SET counter = $1 WHERE id = $2', [
         verification.authenticationInfo.newCounter,
         authenticator.id
       ]);
       res.json({ verified: true });
     } else {
-      res.status(400).json({ verified: false, error: 'Firma biométrica rechazada.' });
+      res.status(400).json({ verified: false, error: 'Firma biométrica rechazada por el chip.' });
     }
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Error interno de validación: ' + error.message });
   }
 });
 
